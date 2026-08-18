@@ -42,7 +42,7 @@ const MAX_LENGTH = 50000;
 /*
  * 30 minutes
  */
-const EXPIRY_MINUTES = 60;
+const EXPIRY_MINUTES = 30;
 
 const MAX_CODE_ATTEMPTS = 20;
 
