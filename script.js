@@ -1,31 +1,55 @@
 "use strict";
 
-
 /*
  * ==========================================
  * ONEPASTE
  * ==========================================
  *
- * Frontend demo.
+ * Backend: Supabase
+ * Hosting: GitHub Pages
  *
- * Current storage:
- * localStorage
- *
- * This allows testing the complete UI
- * on the same browser.
- *
- * For real device to device sharing,
- * localStorage will later be replaced
- * with Supabase.
+ * Clipboard expiry: 30 minutes
+ * Maximum text: 50,000 characters
  *
  * ==========================================
  */
 
 
+/* ==========================================
+   SUPABASE CONFIGURATION
+   ========================================== */
+
+const SUPABASE_URL =
+    "https://pjhkxsjyiqkrjufceemi.supabase.co";
+
+const SUPABASE_KEY =
+    "sb_publishable_9cXi7t_5H_I2PlYP1jROLg_0R4gpCu6";
+
+
+const supabaseClient =
+    supabase.createClient(
+        SUPABASE_URL,
+        SUPABASE_KEY
+    );
+
+
+/* ==========================================
+   SETTINGS
+   ========================================== */
+
 const MAX_LENGTH = 50000;
 
+/*
+ * 30 minutes
+ */
+const EXPIRY_MINUTES = 30;
 
-/* ELEMENTS */
+const MAX_CODE_ATTEMPTS = 20;
+
+
+/* ==========================================
+   ELEMENTS
+   ========================================== */
 
 const sendText =
     document.getElementById("sendText");
@@ -93,7 +117,8 @@ function showMessage(
     type
 ) {
 
-    element.textContent = text;
+    element.textContent =
+        text;
 
     element.className =
         `message ${type}`;
@@ -103,7 +128,8 @@ function showMessage(
 
 function clearMessage(element) {
 
-    element.textContent = "";
+    element.textContent =
+        "";
 
     element.className =
         "message";
@@ -112,7 +138,43 @@ function clearMessage(element) {
 
 
 /* ==========================================
-   GENERATE 4 DIGIT CODE
+   BUTTON LOADING STATE
+   ========================================== */
+
+function setButtonLoading(
+    button,
+    loadingText
+) {
+
+    button.disabled = true;
+
+    button.dataset.originalText =
+        button.textContent;
+
+    button.textContent =
+        loadingText;
+
+}
+
+
+function resetButton(button) {
+
+    button.disabled = false;
+
+    if (button.dataset.originalText) {
+
+        button.textContent =
+            button.dataset.originalText;
+
+        delete button.dataset.originalText;
+
+    }
+
+}
+
+
+/* ==========================================
+   GENERATE RANDOM 4 DIGIT CODE
    ========================================== */
 
 function generateCode() {
@@ -128,21 +190,43 @@ function generateCode() {
 
 
 /* ==========================================
+   CREATE EXPIRY TIME
+   ========================================== */
+
+function getExpiryTime() {
+
+    return new Date(
+        Date.now() +
+        EXPIRY_MINUTES * 60 * 1000
+    ).toISOString();
+
+}
+
+
+/* ==========================================
    SEND TEXT
    ========================================== */
 
 sendButton.addEventListener(
     "click",
-    () => {
+    async () => {
 
         clearMessage(sendMessage);
+
+        /*
+         * Hide previous result
+         */
+        sentBox.style.display =
+            "none";
 
 
         const text =
             sendText.value;
 
 
-        /* EMPTY */
+        /* --------------------------------------
+           EMPTY TEXT
+           -------------------------------------- */
 
         if (!text.trim()) {
 
@@ -159,9 +243,14 @@ sendButton.addEventListener(
         }
 
 
-        /* MAXIMUM LENGTH */
+        /* --------------------------------------
+           MAXIMUM LENGTH
+           -------------------------------------- */
 
-        if (text.length > MAX_LENGTH) {
+        if (
+            text.length >
+            MAX_LENGTH
+        ) {
 
             showMessage(
                 sendMessage,
@@ -174,34 +263,170 @@ sendButton.addEventListener(
         }
 
 
-        /*
-         * TEMPORARY LOCAL STORAGE
-         */
-
-        const code =
-            generateCode();
-
-
-        localStorage.setItem(
-            `clipboard_${code}`,
-            text
+        setButtonLoading(
+            sendButton,
+            "Sending..."
         );
 
 
-        /* SHOW CODE */
+        try {
 
-        generatedCode.textContent =
-            code;
+            let sent = false;
 
-        sentBox.style.display =
-            "block";
+            let successfulCode = null;
 
 
-        showMessage(
-            sendMessage,
-            "Text sent successfully.",
-            "success"
-        );
+            /*
+             * ----------------------------------
+             * TRY MULTIPLE CODES
+             * ----------------------------------
+             *
+             * This protects against two users
+             * getting the same 4 digit code.
+             */
+
+            for (
+                let attempt = 0;
+                attempt < MAX_CODE_ATTEMPTS;
+                attempt++
+            ) {
+
+                const code =
+                    generateCode();
+
+
+                const expiresAt =
+                    getExpiryTime();
+
+
+                const {
+                    error
+                } =
+                    await supabaseClient
+                        .from("clipboards")
+                        .insert({
+                            code: code,
+                            content: text,
+                            expires_at: expiresAt
+                        });
+
+
+                /*
+                 * Successful insert
+                 */
+
+                if (!error) {
+
+                    sent = true;
+
+                    successfulCode =
+                        code;
+
+                    break;
+
+                }
+
+
+                /*
+                 * Duplicate code
+                 *
+                 * PostgreSQL unique violation:
+                 * 23505
+                 *
+                 * Try another code.
+                 */
+
+                if (
+                    error.code === "23505"
+                ) {
+
+                    continue;
+
+                }
+
+
+                /*
+                 * Other database error
+                 */
+
+                console.error(
+                    "Supabase send error:",
+                    error
+                );
+
+                showMessage(
+                    sendMessage,
+                    "Unable to send text. Please try again.",
+                    "error"
+                );
+
+                resetButton(sendButton);
+
+                return;
+
+            }
+
+
+            /*
+             * ----------------------------------
+             * NO AVAILABLE CODE
+             * ----------------------------------
+             */
+
+            if (!sent) {
+
+                showMessage(
+                    sendMessage,
+                    "Unable to generate a code. Please try again.",
+                    "error"
+                );
+
+                resetButton(sendButton);
+
+                return;
+
+            }
+
+
+            /*
+             * ----------------------------------
+             * SUCCESS
+             * ----------------------------------
+             */
+
+            generatedCode.textContent =
+                successfulCode;
+
+
+            sentBox.style.display =
+                "block";
+
+
+            showMessage(
+                sendMessage,
+                "Text sent successfully.",
+                "success"
+            );
+
+
+        } catch (error) {
+
+            console.error(
+                "Send error:",
+                error
+            );
+
+            showMessage(
+                sendMessage,
+                "Unable to connect to server. Please try again.",
+                "error"
+            );
+
+        } finally {
+
+            resetButton(sendButton);
+
+        }
 
     }
 );
@@ -214,6 +439,10 @@ sendButton.addEventListener(
 receiveCode.addEventListener(
     "input",
     () => {
+
+        /*
+         * Only numbers
+         */
 
         receiveCode.value =
             receiveCode.value
@@ -235,11 +464,12 @@ receiveCode.addEventListener(
 
 receiveButton.addEventListener(
     "click",
-    () => {
+    async () => {
 
         clearMessage(
             receiveMessage
         );
+
 
         receivedBox.style.display =
             "none";
@@ -249,7 +479,9 @@ receiveButton.addEventListener(
             receiveCode.value.trim();
 
 
-        /* NOT 4 DIGITS */
+        /* --------------------------------------
+           INVALID LENGTH
+           -------------------------------------- */
 
         if (!/^\d{4}$/.test(code)) {
 
@@ -266,47 +498,122 @@ receiveButton.addEventListener(
         }
 
 
-        /*
-         * TEMPORARY LOCAL STORAGE
-         */
-
-        const text =
-            localStorage.getItem(
-                `clipboard_${code}`
-            );
+        setButtonLoading(
+            receiveButton,
+            "Getting Text..."
+        );
 
 
-        /* INVALID CODE */
+        try {
 
-        if (text === null) {
+            /*
+             * ----------------------------------
+             * FIND ACTIVE CODE
+             * ----------------------------------
+             *
+             * The expires_at condition means
+             * expired clipboard entries cannot
+             * be retrieved.
+             */
+
+            const {
+                data,
+                error
+            } =
+                await supabaseClient
+                    .from("clipboards")
+                    .select("content")
+                    .eq("code", code)
+                    .gt(
+                        "expires_at",
+                        new Date().toISOString()
+                    )
+                    .maybeSingle();
+
+
+            /*
+             * Database error
+             */
+
+            if (error) {
+
+                console.error(
+                    "Supabase receive error:",
+                    error
+                );
+
+                showMessage(
+                    receiveMessage,
+                    "Unable to get text. Please try again.",
+                    "error"
+                );
+
+                return;
+
+            }
+
+
+            /*
+             * Code doesn't exist
+             * or has expired
+             */
+
+            if (!data) {
+
+                showMessage(
+                    receiveMessage,
+                    "Code isn't valid",
+                    "error"
+                );
+
+                receiveCode.focus();
+
+                return;
+
+            }
+
+
+            /*
+             * ----------------------------------
+             * SUCCESS
+             * ----------------------------------
+             */
+
+            receivedText.value =
+                data.content;
+
+
+            receivedBox.style.display =
+                "block";
+
 
             showMessage(
                 receiveMessage,
-                "Code isn't valid",
+                "Text received!",
+                "success"
+            );
+
+
+        } catch (error) {
+
+            console.error(
+                "Receive error:",
+                error
+            );
+
+            showMessage(
+                receiveMessage,
+                "Unable to connect to server. Please try again.",
                 "error"
             );
 
-            receiveCode.focus();
+        } finally {
 
-            return;
+            resetButton(
+                receiveButton
+            );
 
         }
-
-
-        /* SUCCESS */
-
-        receivedText.value =
-            text;
-
-        receivedBox.style.display =
-            "block";
-
-
-        showMessage(
-            receiveMessage,
-            "Text received!",
-            "success"
-        );
 
     }
 );
@@ -335,7 +642,13 @@ copyButton.addEventListener(
                 text
             );
 
+
         } catch (error) {
+
+            /*
+             * Fallback for browsers where
+             * Clipboard API isn't available.
+             */
 
             receivedText.focus();
 
@@ -348,6 +661,10 @@ copyButton.addEventListener(
         }
 
 
+        const originalText =
+            copyButton.textContent;
+
+
         copyButton.textContent =
             "Copied!";
 
@@ -356,7 +673,7 @@ copyButton.addEventListener(
             () => {
 
                 copyButton.textContent =
-                    "Copy Text";
+                    originalText;
 
             },
             1500
@@ -364,4 +681,3 @@ copyButton.addEventListener(
 
     }
 );
-
